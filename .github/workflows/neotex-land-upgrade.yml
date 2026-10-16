@@ -1,0 +1,72 @@
+# Approving an upgrade PR (upgrade/<tag> -> main) lands it: `fork` is moved to
+# the reviewed commit and the PR is closed. GitHub's merge button cannot land
+# a rebase, so this is the one place a bot moves `fork`. The push to `fork`
+# starts neotex-release, which builds and waits for deploy approval.
+name: neotex-land-upgrade
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neotex-land-upgrade
+  cancel-in-progress: false
+
+jobs:
+  land:
+    if: >-
+      github.event.review.state == 'approved' &&
+      startsWith(github.event.pull_request.head.ref, 'upgrade/') &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app
+        with:
+          app-id: ${{ vars.NEOTEX_BOT_APP_ID }}
+          private-key: ${{ secrets.NEOTEX_BOT_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+      - name: Land on fork
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          fail() {
+            gh pr comment "$PR" --body "Not landed: $1"
+            echo "::error::$1"
+            exit 1
+          }
+
+          [ "$DRAFT" != true ] || fail "the PR is a draft; finish the rebase and mark it ready first"
+
+          # Every check on the head commit except this job must have passed.
+          checks=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name != "land")]')
+          [ "$(jq length <<<"$checks")" -gt 0 ] || fail "no CI checks have run on $HEAD_SHA"
+          unfinished=$(jq -r '[.[] | select(.status != "completed") | .name] | join(", ")' <<<"$checks")
+          [ -z "$unfinished" ] || fail "checks still running: $unfinished; approve again once they finish"
+          failed=$(jq -r '[.[] | select(.conclusion | IN("success", "skipped", "neutral") | not) | .name] | join(", ")' <<<"$checks")
+          [ -z "$failed" ] || fail "checks not green: $failed"
+
+          fork_base=$(head -n 1 <<<"$BODY" | sed -n 's/.*fork-base=\([0-9a-f]\{40\}\).*/\1/p')
+          [ -n "$fork_base" ] || fail "no neotex-upgrade marker on the first line of the PR body"
+
+          rc=0
+          out=$(neotex/bin/land-upgrade origin "$HEAD_SHA" "$fork_base" 2>&1) || rc=$?
+          echo "$out"
+          [ "$rc" -eq 0 ] || fail "$(tail -n 1 <<<"$out")"
+
+          neotex/bin/disable-upstream-workflows
+          gh pr close "$PR" --comment "Landed on fork at $HEAD_SHA; the release workflow will build and wait for deploy approval."
