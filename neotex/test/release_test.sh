@@ -58,6 +58,7 @@ test_pr_body_lists_new_workflows() {
   git tag v2.7.0
   body=$(upgrade-pr-body v2.6.0 v2.7.0 "$(git rev-parse v2.4.0)")
   assert_contains "$body" ".github/workflows/new.yml"
+  assert_contains "$body" "can fire before it is disabled"
 }
 
 test_pr_body_no_new_workflows_says_none() {
