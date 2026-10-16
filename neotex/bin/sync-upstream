@@ -3,7 +3,7 @@
 # Run by hand from a clone whose `origin` is neotex-cloud/vikunja, with git
 # and gh credentials that may force-push `main` and push workflow files.
 # Moves `main` to upstream release <tag> (default: the newest stable release
-# newer than the one `fork` is on), rebases our commits onto it as
+# newer than the one `fork` is on) and pushes that tag, rebases our commits onto it as
 # upgrade/<tag>, and opens (or refreshes) the PR into `main` for review.
 # Once it is approved, neotex/bin/land-pr lands it. The caller's checkout is
 # never touched.
@@ -31,6 +31,9 @@ fork_sha=$(git rev-parse origin/fork)
 if [ "$(git rev-parse origin/main)" != "$(git rev-parse "$next^{commit}")" ]; then
   git push --force origin "$next^{commit}:refs/heads/main"
 fi
+# Upstream's test.yml runs `git describe`, which needs the release tag here.
+# Never forced: an existing tag is left alone.
+git push origin "refs/tags/$next:refs/tags/$next"
 disable-upstream-workflows
 
 rc=0
