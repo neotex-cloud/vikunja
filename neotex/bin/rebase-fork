@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# rebase-fork <new-tag> <old-base> <fork-ref> <out-branch>
+# Replays our commits (<old-base>..<fork-ref>) onto <new-tag> and points the
+# local branch <out-branch> at the result. The rebase runs in a throwaway
+# worktree, so the caller's checkout is never touched.
+#
+# Exit 0: clean. Exit 3: a commit conflicted; the rebase is aborted,
+# <out-branch> holds the commits that applied cleanly before it, and stdout is
+# the single line "CONFLICT <sha> <subject>". Exit 2: bad arguments.
+set -euo pipefail
+
+if [ $# -ne 4 ]; then
+  echo "usage: rebase-fork <new-tag> <old-base> <fork-ref> <out-branch>" >&2
+  exit 2
+fi
+new_tag=$1
+old_base=$2
+fork_ref=$3
+out_branch=$4
+
+work=$(mktemp -d)
+cleanup() {
+  git worktree remove --force "$work" >/dev/null 2>&1 || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+git worktree add --quiet --detach "$work" "$fork_ref" >&2
+
+if git -C "$work" rebase --onto "$new_tag" "$old_base" >&2; then
+  git branch --force "$out_branch" "$(git -C "$work" rev-parse HEAD)"
+  exit 0
+fi
+
+stopped=$(git -C "$work" rev-parse REBASE_HEAD)
+applied=$(git -C "$work" rev-parse HEAD)
+git -C "$work" rebase --abort >&2
+git branch --force "$out_branch" "$applied"
+echo "CONFLICT $stopped $(git log -1 --format=%s "$stopped")"
+exit 3

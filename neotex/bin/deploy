@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# deploy <image-tag>
+# Deploys ghcr.io/neotex-cloud/vikunja:<image-tag> to the Vikunja box:
+# snapshot the data volume, swap the image over SSM, wait until
+# /api/v1/info reports v<image-tag>, then record the image in SSM so a
+# rebuilt box boots on it. Needs AWS credentials (the OIDC deploy role).
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "usage: deploy <image-tag>" >&2
+  exit 2
+fi
+tag=$1
+
+: "${AWS_REGION:=us-east-2}"
+: "${IMAGE_REPO:=ghcr.io/neotex-cloud/vikunja}"
+: "${VIKUNJA_URL:=https://vikunja.neotex.cloud}"
+: "${SSM_PARAM:=/vikunja/image}"
+: "${DEPLOY_TIMEOUT:=300}"
+: "${SNAPSHOT_TIMEOUT:=3600}"
+: "${POLL_INTERVAL:=10}"
+
+image="$IMAGE_REPO:$tag"
+here=$(cd "$(dirname "$0")" && pwd)
+
+fail() {
+  echo "deploy: $*" >&2
+  exit 1
+}
+
+# exactly_one <what> <words...>: the single word, or fail.
+exactly_one() {
+  local what=$1
+  shift
+  [ $# -eq 1 ] || fail "expected exactly one $what, found $# ($*)"
+  echo "$1"
+}
+
+# shellcheck disable=SC2046 # word-splitting the id list is the point
+instance=$(exactly_one "running vikunja instance" $(aws ec2 describe-instances --region "$AWS_REGION" \
+  --filters Name=tag:Application,Values=vikunja Name=instance-state-name,Values=running \
+  --query 'Reservations[].Instances[].InstanceId' --output text))
+# shellcheck disable=SC2046
+volume=$(exactly_one "vikunja-data volume" $(aws ec2 describe-volumes --region "$AWS_REGION" \
+  --filters Name=tag:Name,Values=vikunja-data --query 'Volumes[].VolumeId' --output text))
+
+snapshot=$(aws ec2 create-snapshot --region "$AWS_REGION" --volume-id "$volume" \
+  --description "pre-deploy $tag" \
+  --tag-specifications 'ResourceType=snapshot,Tags=[{Key=Application,Value=vikunja},{Key=Purpose,Value=pre-deploy}]' \
+  --query SnapshotId --output text)
+echo "SNAPSHOT $snapshot"
+
+# Polled rather than `aws ec2 wait`: the waiter gives up after 10 minutes,
+# and a volume's first snapshot can take longer.
+deadline=$((SECONDS + SNAPSHOT_TIMEOUT))
+while :; do
+  state=$(aws ec2 describe-snapshots --region "$AWS_REGION" --snapshot-ids "$snapshot" \
+    --query 'Snapshots[0].State' --output text)
+  [ "$state" = completed ] && break
+  [ "$state" = error ] && fail "snapshot $snapshot failed"
+  [ "$SECONDS" -lt "$deadline" ] || fail "snapshot $snapshot not completed after ${SNAPSHOT_TIMEOUT}s"
+  sleep "$POLL_INTERVAL"
+done
+
+params=$(jq -n --arg image "$image" --rawfile script "$here/remote-swap-image.sh" \
+  '{commands: ["export IMAGE=" + ($image | @sh), $script]}')
+command_id=$(aws ssm send-command --region "$AWS_REGION" --instance-ids "$instance" \
+  --document-name AWS-RunShellScript --comment "vikunja deploy $tag" \
+  --parameters "$params" --query Command.CommandId --output text)
+
+deadline=$((SECONDS + DEPLOY_TIMEOUT))
+while :; do
+  invocation=$(aws ssm get-command-invocation --region "$AWS_REGION" \
+    --command-id "$command_id" --instance-id "$instance" --output json 2>/dev/null || echo '{"Status":"Pending"}')
+  status=$(jq -r .Status <<<"$invocation")
+  case "$status" in
+    Success) break ;;
+    Pending | InProgress | Delayed) ;;
+    *)
+      jq -r .StandardErrorContent <<<"$invocation" >&2
+      fail "image swap on $instance ended $status; restore point: SNAPSHOT $snapshot"
+      ;;
+  esac
+  [ "$SECONDS" -lt "$deadline" ] || fail "image swap on $instance still $status after ${DEPLOY_TIMEOUT}s; restore point: SNAPSHOT $snapshot"
+  sleep "$POLL_INTERVAL"
+done
+
+deadline=$((SECONDS + DEPLOY_TIMEOUT))
+until [ "$(curl -fsS "$VIKUNJA_URL/api/v1/info" 2>/dev/null | jq -r .version 2>/dev/null)" = "v$tag" ]; do
+  [ "$SECONDS" -lt "$deadline" ] || fail "version never reached v$tag; restore point: SNAPSHOT $snapshot"
+  sleep "$POLL_INTERVAL"
+done
+
+aws ssm put-parameter --region "$AWS_REGION" --name "$SSM_PARAM" --type String --overwrite \
+  --value "$image" >/dev/null
+echo "deployed $image (restore point: SNAPSHOT $snapshot)"

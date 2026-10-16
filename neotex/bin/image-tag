@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# image-tag [<ref>]
+# Prints the image tag for <ref> (default HEAD): X.Y.Z-neotex.N, where vX.Y.Z
+# is the newest stable upstream tag reachable from <ref> and N the number of
+# commits on top of it.
+set -euo pipefail
+
+ref=${1:-HEAD}
+
+if ! tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' "$ref" 2>/dev/null); then
+  echo "image-tag: no upstream release tag reachable from $ref (fetch upstream tags first)" >&2
+  exit 1
+fi
+
+count=$(git rev-list --count "$tag..$ref")
+echo "${tag#v}-neotex.$count"

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# land-upgrade <remote> <head-sha> <expected-fork-sha>
+# Moves <remote>'s fork branch to an approved upgrade head. The push carries a
+# lease on the fork commit the upgrade was built from, so a commit that landed
+# on fork in the meantime is never overwritten.
+#
+# Exit 0: landed. Exit 4: <head-sha> does not build on <remote>/main.
+# Exit 5: fork moved since the upgrade was built. Exit 2: bad arguments.
+set -euo pipefail
+
+if [ $# -ne 3 ]; then
+  echo "usage: land-upgrade <remote> <head-sha> <expected-fork-sha>" >&2
+  exit 2
+fi
+remote=$1
+head=$2
+expected=$3
+
+git fetch --quiet "$remote" main
+
+if ! git merge-base --is-ancestor "$remote/main" "$head"; then
+  echo "land-upgrade: head does not build on main ($head is not on top of $remote/main)" >&2
+  exit 4
+fi
+
+if ! err=$(git push --porcelain --force-with-lease="refs/heads/fork:$expected" "$remote" "$head:refs/heads/fork" 2>&1); then
+  if grep -q 'stale info' <<<"$err"; then
+    echo "land-upgrade: fork moved since this upgrade was built; re-run the upstream sync" >&2
+    exit 5
+  fi
+  echo "$err" >&2
+  exit 1
+fi
+echo "landed $head on fork"

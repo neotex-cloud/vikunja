@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# upgrade-pr-body <from-tag> <to-tag> <fork-base-sha> [<conflict-line>]
+# Prints the body of an upstream-upgrade PR. Its first line is the marker the
+# land workflow reads back: which release we came from and went to, and the
+# fork commit the upgrade was rebased from. <conflict-line> is rebase-fork's
+# "CONFLICT <sha> <subject>" output when the rebase stopped.
+set -euo pipefail
+
+if [ $# -lt 3 ] || [ $# -gt 4 ]; then
+  echo "usage: upgrade-pr-body <from-tag> <to-tag> <fork-base-sha> [<conflict-line>]" >&2
+  exit 2
+fi
+from=$1
+to=$2
+fork_base=$3
+conflict=${4:-}
+
+echo "<!-- neotex-upgrade from=$from to=$to fork-base=$fork_base -->"
+echo
+echo "Upgrades our fork from upstream **$from** to **$to**: our commits, rebased onto the new release."
+echo "The diff below is exactly our changes on top of $to. Approving this PR lands it on \`fork\`"
+echo "(it is closed, not merged); the release workflow then builds the image and waits for deploy approval."
+echo
+echo "### Upstream release notes"
+git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | while read -r tag; do
+  [ "$(printf '%s\n%s\n' "$from" "$tag" | sort -V | head -n 1)" = "$from" ] || continue
+  [ "$tag" != "$from" ] || continue
+  git merge-base --is-ancestor "$tag" "$to" || continue
+  echo "- [$tag](https://github.com/go-vikunja/vikunja/releases/tag/$tag)"
+done
+echo
+
+new_workflows=$(git diff --name-only --diff-filter=A "$from" "$to" -- .github/workflows/)
+if [ -n "$new_workflows" ]; then
+  echo "### New upstream workflows"
+  echo "Disabled by the sync and again on landing. One that triggers on a push to \`main\` may already"
+  echo "have run once when the sync moved \`main\`; check its run in the Actions tab."
+  sed 's/^/- `/; s/$/`/' <<<"$new_workflows"
+else
+  echo "New upstream workflows: none"
+fi
+
+if [ -n "$conflict" ]; then
+  read -r _ stopped subject <<<"$conflict"
+  remaining=$(git rev-list --reverse "$stopped^..$fork_base" | tr '\n' ' ')
+  echo
+  echo "### Rebase stopped on a conflict"
+  echo "Our commit \`$stopped\` (\"$subject\") does not apply cleanly on $to. This branch holds the"
+  echo "commits that did. To finish:"
+  echo
+  echo '```bash'
+  echo "git fetch origin && git switch upgrade/$to && git cherry-pick ${remaining% }"
+  echo "# resolve each conflict, then: git add -A && git cherry-pick --continue"
+  echo "git push --force-with-lease origin upgrade/$to"
+  echo '```'
+  echo
+  echo "Then mark ready for review."
+fi
