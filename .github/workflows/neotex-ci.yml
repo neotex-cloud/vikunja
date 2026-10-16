@@ -1,7 +1,10 @@
 # Our PR checks for the neotex fork. Runs on PRs into `fork` (everyday
 # changes) and into `main` (the upgrade PRs neotex/bin/sync-upstream opens).
 # Upstream's own ci.yml is disabled in this repo; its test.yml is reused
-# here unchanged.
+# here unchanged, but only on upgrade PRs: it is ~30 jobs (an API test per
+# database) that only tell us something when upstream's code changes. On
+# everyday PRs the arm64 image build is what catches a broken frontend or
+# backend build.
 name: neotex-ci
 
 on:
@@ -26,6 +29,7 @@ jobs:
         run: neotex/test/run
 
   upstream:
+    if: github.event.pull_request.base.ref == 'main'
     uses: ./.github/workflows/test.yml
 
   image:
