@@ -29,6 +29,7 @@ test_sync_opens_upgrade_pr_to_newest_release() {
   sync_setup
   out=$(sync-upstream)
   assert_eq "$(git rev-parse 'v2.6.0^{commit}')" "$(remote_sha main)" "main moved to the release"
+  assert_eq "$(git rev-parse v2.6.0)" "$(git ls-remote origin refs/tags/v2.6.0 | cut -f1)" "release tag pushed"
   git fetch -q origin upgrade/v2.6.0
   assert_eq 1 "$(git rev-list --count v2.6.0..FETCH_HEAD)" "our commit on top of v2.6.0"
   assert_eq "ours" "$(git show FETCH_HEAD:b.txt)"
@@ -93,4 +94,11 @@ case "$1 $2" in
 esac'
   sync-upstream >/dev/null
   assert_contains "$(cat "$FAKE_LOG")" "gh workflow disable 9"
+}
+
+test_sync_pushes_tag_when_main_already_there() {
+  sync_setup
+  (cd ../up && git push -q ../origin.git v2.6.0^{commit}:refs/heads/main --force)
+  sync-upstream >/dev/null
+  assert_eq "$(git rev-parse v2.6.0)" "$(git ls-remote origin refs/tags/v2.6.0 | cut -f1)"
 }
