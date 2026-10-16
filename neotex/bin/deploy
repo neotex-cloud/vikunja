@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # deploy <image-tag>
-# Deploys ghcr.io/neotex-cloud/vikunja:<image-tag> to the Vikunja box:
+# Deploys <account>.dkr.ecr.<region>.amazonaws.com/neotex-cloud/vikunja:<tag> (the
+# private ECR repository in the account the credentials belong to, so the
+# account id is not written into this public repo) to the Vikunja box:
 # snapshot the data volume, swap the image over SSM, wait until
 # /api/v1/info reports v<image-tag>, then record the image in SSM so a
 # rebuilt box boots on it. Needs AWS credentials (the OIDC deploy role).
@@ -13,13 +15,16 @@ fi
 tag=$1
 
 : "${AWS_REGION:=us-east-2}"
-: "${IMAGE_REPO:=ghcr.io/neotex-cloud/vikunja}"
 : "${VIKUNJA_URL:=https://vikunja.neotex.cloud}"
 : "${SSM_PARAM:=/vikunja/image}"
 : "${DEPLOY_TIMEOUT:=300}"
 : "${SNAPSHOT_TIMEOUT:=3600}"
 : "${POLL_INTERVAL:=10}"
 
+if [ -z "${IMAGE_REPO:-}" ]; then
+  account=$(aws sts get-caller-identity --query Account --output text)
+  IMAGE_REPO="$account.dkr.ecr.$AWS_REGION.amazonaws.com/neotex-cloud/vikunja"
+fi
 image="$IMAGE_REPO:$tag"
 here=$(cd "$(dirname "$0")" && pwd)
 
