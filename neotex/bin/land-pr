@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# land-pr <pr-number>
+# Run by hand, after reviewing and approving an upgrade PR, from a clone whose
+# `origin` is neotex-cloud/vikunja. Moves `fork` to the PR's head (GitHub's
+# merge button cannot land a rebase) and closes the PR. The push to `fork`
+# starts neotex-release, which builds and waits for deploy approval.
+#
+# Refuses a PR that is not open, is a draft, is not upgrade/* -> main, or has
+# no neotex-upgrade marker. land-upgrade's exit codes pass through.
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "usage: land-pr <pr-number>" >&2
+  exit 2
+fi
+pr=$1
+export GH_REPO=${GH_REPO:-neotex-cloud/vikunja}
+
+refuse() {
+  echo "land-pr: $*" >&2
+  exit 1
+}
+
+view=$(gh pr view "$pr" --json state,isDraft,baseRefName,headRefName,headRefOid,body)
+[ "$(jq -r .state <<<"$view")" = OPEN ] || refuse "PR #$pr is $(jq -r .state <<<"$view")"
+[ "$(jq -r .isDraft <<<"$view")" != true ] || refuse "PR #$pr is a draft; finish the rebase and mark it ready first"
+[ "$(jq -r .baseRefName <<<"$view")" = main ] || refuse "PR #$pr does not target main"
+branch=$(jq -r .headRefName <<<"$view")
+[[ "$branch" == upgrade/* ]] || refuse "PR #$pr is not from an upgrade/* branch"
+head=$(jq -r .headRefOid <<<"$view")
+fork_base=$(jq -r .body <<<"$view" | head -n 1 | sed -n 's/.*fork-base=\([0-9a-f]\{40\}\).*/\1/p')
+[ -n "$fork_base" ] || refuse "PR #$pr has no neotex-upgrade marker on the first line of its body"
+
+git fetch --quiet origin "$branch"
+[ "$(git rev-parse FETCH_HEAD)" = "$head" ] || refuse "origin/$branch is not the PR's head $head; re-run"
+
+land-upgrade origin "$head" "$fork_base"
+disable-upstream-workflows
+gh pr close "$pr" --comment "Landed on fork at $head; the release workflow will build and wait for deploy approval."

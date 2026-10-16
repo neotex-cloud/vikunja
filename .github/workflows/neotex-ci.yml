@@ -1,5 +1,5 @@
 # Our PR checks for the neotex fork. Runs on PRs into `fork` (everyday
-# changes) and into `main` (the upgrade PRs the upstream sync opens).
+# changes) and into `main` (the upgrade PRs neotex/bin/sync-upstream opens).
 # Upstream's own ci.yml is disabled in this repo; its test.yml is reused
 # here unchanged.
 name: neotex-ci

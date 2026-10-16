@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # upgrade-pr-body <from-tag> <to-tag> <fork-base-sha> [<conflict-line>]
-# Prints the body of an upstream-upgrade PR. Its first line is the marker the
-# land workflow reads back: which release we came from and went to, and the
+# Prints the body of an upstream-upgrade PR. Its first line is the marker
+# neotex/bin/land-pr reads back: which release we came from and went to, and the
 # fork commit the upgrade was rebased from. <conflict-line> is rebase-fork's
 # "CONFLICT <sha> <subject>" output when the rebase stopped.
 set -euo pipefail
@@ -18,8 +18,9 @@ conflict=${4:-}
 echo "<!-- neotex-upgrade from=$from to=$to fork-base=$fork_base -->"
 echo
 echo "Upgrades our fork from upstream **$from** to **$to**: our commits, rebased onto the new release."
-echo "The diff below is exactly our changes on top of $to. Approving this PR lands it on \`fork\`"
-echo "(it is closed, not merged); the release workflow then builds the image and waits for deploy approval."
+echo "The diff below is exactly our changes on top of $to. Once it is approved, land it with"
+echo "\`neotex/bin/land-pr <this PR>\` (it moves \`fork\` and closes this PR; do not merge it). The release"
+echo "workflow then builds the image and waits for deploy approval."
 echo
 echo "### Upstream release notes"
 git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | while read -r tag; do
@@ -33,7 +34,7 @@ echo
 new_workflows=$(git diff --name-only --diff-filter=A "$from" "$to" -- .github/workflows/)
 if [ -n "$new_workflows" ]; then
   echo "### New upstream workflows"
-  echo "The sync and the landing both disable these, but GitHub may only register a workflow once it"
+  echo "sync-upstream and land-pr both disable these, but GitHub may only register a workflow once it"
   echo "has run, so each one can fire before it is disabled: on the push of \`main\`, of this branch, of"
   echo "this PR, or of \`fork\` when it lands. Check their runs in the Actions tab before approving."
   sed 's/^/- `/; s/$/`/' <<<"$new_workflows"
