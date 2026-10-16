@@ -33,8 +33,9 @@ echo
 new_workflows=$(git diff --name-only --diff-filter=A "$from" "$to" -- .github/workflows/)
 if [ -n "$new_workflows" ]; then
   echo "### New upstream workflows"
-  echo "Disabled by the sync and again on landing. One that triggers on a push to \`main\` may already"
-  echo "have run once when the sync moved \`main\`; check its run in the Actions tab."
+  echo "The sync and the landing both disable these, but GitHub may only register a workflow once it"
+  echo "has run, so each one can fire before it is disabled: on the push of \`main\`, of this branch, of"
+  echo "this PR, or of \`fork\` when it lands. Check their runs in the Actions tab before approving."
   sed 's/^/- `/; s/$/`/' <<<"$new_workflows"
 else
   echo "New upstream workflows: none"

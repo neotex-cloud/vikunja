@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# land-checks <pr-number>
+# Decides whether an upstream-upgrade PR may land on `fork`. Runs from the
+# fork branch (neotex-land-upgrade), never from the PR, and reads everything
+# from the GitHub API rather than from the triggering event.
+#
+# Prints "<head-sha> <fork-base-sha>" and exits 0 when the PR:
+#   - is open, not a draft, upgrade/* -> main, from this repo;
+#   - has, on its current head commit, an approval from someone with write
+#     access (each reviewer's latest non-comment review counts), and no
+#     outstanding "changes requested" from such a person;
+#   - has CI checks on the head commit, all finished and green (the
+#     land-trigger job itself excluded);
+#   - carries the neotex-upgrade marker naming the fork commit it was built from.
+# Otherwise prints the reason to stderr and exits 1. Needs GITHUB_REPOSITORY.
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "usage: land-checks <pr-number>" >&2
+  exit 2
+fi
+pr=$1
+repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be set}
+
+refuse() {
+  echo "$*" >&2
+  exit 1
+}
+
+pull=$(gh api "repos/$repo/pulls/$pr")
+head=$(jq -r .head.sha <<<"$pull")
+
+[ "$(jq -r .state <<<"$pull")" = open ] || refuse "the PR is $(jq -r .state <<<"$pull")"
+[ "$(jq -r .draft <<<"$pull")" != true ] || refuse "the PR is a draft; finish the rebase and mark it ready first"
+[ "$(jq -r .base.ref <<<"$pull")" = main ] || refuse "the PR does not target main"
+[[ "$(jq -r .head.ref <<<"$pull")" == upgrade/* ]] || refuse "the PR is not from an upgrade/* branch"
+[ "$(jq -r .head.repo.full_name <<<"$pull")" = "$repo" ] || refuse "the PR is not from this repository"
+
+# Each reviewer's latest review that is not a plain comment.
+latest=$(gh api "repos/$repo/pulls/$pr/reviews?per_page=100" | jq -c '
+  map(select(.state != "COMMENTED" and .state != "PENDING"))
+  | group_by(.user.login) | map(last) | .[]')
+
+approved=false
+while IFS= read -r review; do
+  [ -n "$review" ] || continue
+  user=$(jq -r .user.login <<<"$review")
+  permission=$(gh api "repos/$repo/collaborators/$user/permission" 2>/dev/null | jq -r .permission || echo none)
+  case "$permission" in
+    admin | maintain | write) ;;
+    *) continue ;;
+  esac
+  case "$(jq -r .state <<<"$review")" in
+    CHANGES_REQUESTED) refuse "changes requested by $user" ;;
+    APPROVED) [ "$(jq -r .commit_id <<<"$review")" = "$head" ] && approved=true ;;
+  esac
+done <<<"$latest"
+[ "$approved" = true ] || refuse "no approval of $head by someone with write access"
+
+checks=$(gh api "repos/$repo/commits/$head/check-runs?per_page=100" \
+  | jq '[.check_runs[] | select(.name != "land-trigger")]')
+[ "$(jq length <<<"$checks")" -gt 0 ] || refuse "no CI checks have run on $head"
+running=$(jq -r '[.[] | select(.status != "completed") | .name] | join(", ")' <<<"$checks")
+[ -z "$running" ] || refuse "checks still running: $running; approve again once they finish"
+red=$(jq -r '[.[] | select(.conclusion | IN("success", "skipped", "neutral") | not) | .name] | join(", ")' <<<"$checks")
+[ -z "$red" ] || refuse "checks not green: $red"
+
+fork_base=$(jq -r .body <<<"$pull" | head -n 1 | sed -n 's/.*fork-base=\([0-9a-f]\{40\}\).*/\1/p')
+[ -n "$fork_base" ] || refuse "no neotex-upgrade marker on the first line of the PR body"
+
+echo "$head $fork_base"
