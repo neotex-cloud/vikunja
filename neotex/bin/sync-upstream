@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# sync-upstream [<tag>]
+# Run by hand from a clone whose `origin` is neotex-cloud/vikunja, with git
+# and gh credentials that may force-push `main` and push workflow files.
+# Moves `main` to upstream release <tag> (default: the newest stable release
+# newer than the one `fork` is on), rebases our commits onto it as
+# upgrade/<tag>, and opens (or refreshes) the PR into `main` for review.
+# Once it is approved, neotex/bin/land-pr lands it. The caller's checkout is
+# never touched.
+set -euo pipefail
+
+if [ $# -gt 1 ]; then
+  echo "usage: sync-upstream [<tag>]" >&2
+  exit 2
+fi
+export GH_REPO=${GH_REPO:-neotex-cloud/vikunja}
+upstream=${UPSTREAM_URL:-https://github.com/go-vikunja/vikunja.git}
+
+git fetch --tags --quiet "$upstream"
+git fetch --quiet origin main fork
+
+from=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' origin/fork)
+next=${1:-$(next-release "$from")}
+if [ -z "$next" ]; then
+  echo "fork is on $from; nothing newer upstream"
+  exit 0
+fi
+branch="upgrade/$next"
+fork_sha=$(git rev-parse origin/fork)
+
+if [ "$(git rev-parse origin/main)" != "$(git rev-parse "$next^{commit}")" ]; then
+  git push --force origin "$next^{commit}:refs/heads/main"
+fi
+disable-upstream-workflows
+
+rc=0
+conflict=$(rebase-fork "$next" "$from" origin/fork "$branch") || rc=$?
+case "$rc" in
+  0) conflict="" ;;
+  3) echo "$conflict" ;;
+  *) exit "$rc" ;;
+esac
+git push --force origin "$branch"
+
+body=$(upgrade-pr-body "$from" "$next" "$fork_sha" "$conflict")
+number=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')
+if [ -n "$number" ]; then
+  gh pr edit "$number" --body "$body"
+  if [ -n "$conflict" ]; then gh pr ready "$number" --undo || true; fi
+  echo "refreshed PR #$number"
+else
+  gh pr create --base main --head "$branch" --title "Upgrade to Vikunja $next" \
+    --body "$body" ${conflict:+--draft}
+fi

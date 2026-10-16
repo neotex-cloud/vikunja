@@ -25,7 +25,7 @@ fi
 
 if ! err=$(git push --porcelain --force-with-lease="refs/heads/fork:$expected" "$remote" "$head:refs/heads/fork" 2>&1); then
   if grep -q 'stale info' <<<"$err"; then
-    echo "land-upgrade: fork moved since this upgrade was built; re-run the upstream sync" >&2
+    echo "land-upgrade: fork moved since this upgrade was built; re-run neotex/bin/sync-upstream" >&2
     exit 5
   fi
   echo "$err" >&2
