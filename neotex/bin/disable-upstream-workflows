@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# disable-upstream-workflows
+# Disables every active workflow in the repo except our own (neotex-*.yml)
+# and upstream's test.yml, which neotex-ci reuses. Upstream's workflows would
+# otherwise release, translate and package under our name. Uses gh's repo
+# context (GH_REPO or the cwd's remote).
+set -euo pipefail
+
+gh workflow list --all --json id,path,state \
+  | jq -r '.[] | select(.state == "active") | "\(.id) \(.path)"' \
+  | while read -r id path; do
+      case "$(basename "$path")" in
+        test.yml | neotex-*.yml) continue ;;
+      esac
+      gh workflow disable "$id"
+      echo "disabled $path"
+    done

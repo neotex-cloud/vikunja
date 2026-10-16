@@ -1,0 +1,2 @@
+# Upstream ignores bin/ (.gitignore:19); our scripts live in neotex/bin.
+!bin/
