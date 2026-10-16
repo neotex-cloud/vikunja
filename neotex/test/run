@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Runs every test_* function in neotex/test/*_test.sh, each in its own
+# subshell inside a fresh temp dir, with fake commands from $FAKE_BIN first
+# on PATH and neotex/bin next. No network.
+set -uo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+pass=0
+fail=0
+
+for file in "$here"/*_test.sh; do
+  tests=$(bash -c "source '$here/helpers.sh'; source '$file'; declare -F" | awk '{print $3}' | grep '^test_' || true)
+  for t in $tests; do
+    tmp=$(mktemp -d)
+    (
+      set -euo pipefail
+      cd "$tmp"
+      export HOME="$tmp" GIT_CONFIG_NOSYSTEM=1
+      export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
+      export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
+      export FAKE_BIN="$tmp/.fakebin" FAKE_LOG="$tmp/.fakelog"
+      mkdir -p "$FAKE_BIN"
+      : > "$FAKE_LOG"
+      export PATH="$FAKE_BIN:$root/neotex/bin:$PATH"
+      export NEOTEX_ROOT="$root"
+      source "$here/helpers.sh"
+      source "$file"
+      "$t"
+    ) > "$tmp.out" 2>&1
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      echo "PASS $t"
+      pass=$((pass + 1))
+    else
+      echo "FAIL $t"
+      sed 's/^/    /' "$tmp.out"
+      fail=$((fail + 1))
+    fi
+    rm -rf "$tmp" "$tmp.out"
+  done
+done
+
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]
