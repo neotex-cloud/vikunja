@@ -95,7 +95,7 @@ YAML
   assert_eq 1 "$(grep -c 'image: ghcr.io/neotex-cloud/vikunja:2.4.0-neotex.3' data/docker-compose.yml)"
   assert_contains "$compose" "    image: postgres:16"
   assert_not_contains "$compose" "vikunja/vikunja:2.4.0"
-  assert_contains "$(cat "$FAKE_LOG")" "pull vikunja"
+  assert_contains "$(cat "$FAKE_LOG")" "docker pull ghcr.io/neotex-cloud/vikunja:2.4.0-neotex.3"
   assert_contains "$(cat "$FAKE_LOG")" "up -d"
 }
 
@@ -109,4 +109,17 @@ test_swap_image_refuses_when_no_vikunja_image_line() {
   assert_contains "$err" "no image line for the vikunja service"
   assert_eq "$(printf 'services:\n  db:\n    image: postgres:16')" "$(cat data/docker-compose.yml)"
   assert_eq "" "$(cat "$FAKE_LOG")" "docker never called"
+}
+
+test_swap_image_failed_pull_leaves_compose_alone() {
+  mkdir data
+  printf 'services:\n  vikunja:\n    image: vikunja/vikunja:2.4.0\n  db:\n    image: postgres:16\n' > data/docker-compose.yml
+  before=$(cat data/docker-compose.yml)
+  fake_cmd docker 'if [ "$1" = pull ]; then echo "manifest unknown" >&2; exit 1; fi'
+  rc=0
+  IMAGE=ghcr.io/neotex-cloud/vikunja:missing COMPOSE_FILE_PATH="$PWD/data/docker-compose.yml" \
+    bash "$NEOTEX_ROOT/neotex/bin/remote-swap-image.sh" 2>/dev/null || rc=$?
+  [ "$rc" -ne 0 ] || { echo "expected failure" >&2; exit 1; }
+  assert_eq "$before" "$(cat data/docker-compose.yml)" "compose untouched when the pull fails"
+  assert_not_contains "$(cat "$FAKE_LOG")" "up -d"
 }
